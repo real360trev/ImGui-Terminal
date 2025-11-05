@@ -36,3 +36,6 @@ make
 
 Contributions are welcome.
 
+*** Added Suppport for WINDOWS and APPLE targets **** 
+
+<img width="1273" height="885" alt="image" src="https://github.com/user-attachments/assets/249e7b45-e6e3-44a5-ad75-af78a1e25745" />
