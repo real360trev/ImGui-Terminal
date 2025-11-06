@@ -1,4 +1,4 @@
-/* util/terminal.cpp This utility adds a terminal emulator, activate it using the keybind cmd t The emulator is based suckless st.c and support most xterm ansi sequences */
+﻿/* util/terminal.cpp This utility adds a terminal emulator, activate it using the keybind cmd t The emulator is based suckless st.c and support most xterm ansi sequences */
 
 #include "terminal.h" // Assume this is the header with class definitions, structs like Glyph, CSIEscape, etc.
 
@@ -160,10 +160,7 @@ void Terminal::startShell() {
     InitializeProcThreadAttributeList(siStartupInfo.lpAttributeList, 1, 0, &attrListSize);
     UpdateProcThreadAttribute(siStartupInfo.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPc, sizeof(hPc), NULL, NULL);
 
-    std::string cmd = "cmd.exe";
-    TCHAR cmdBuf[256];
-    _tcscpy_s(cmdBuf, cmd.c_str());
-
+    TCHAR cmdBuf[256] = { "cmd.exe" };
     if (!CreateProcess(NULL, cmdBuf, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &siStartupInfo.StartupInfo, &piProcInfo)) {
         // Error
         return;
@@ -396,6 +393,7 @@ void Terminal::startShell() {
 #endif
 }
 
+#if 0
 void Terminal::render() {
     if (!isVisible) return;
 #ifdef _WIN32
@@ -421,6 +419,91 @@ void Terminal::render() {
         ImGui::End();
     }
     }
+#else
+const float SCROLLBAR_WIDTH = 16.0f;
+bool invertScroll = false;
+
+void Terminal::render() {
+    if (!isVisible) return;
+#ifdef _WIN32
+    if (hPc == NULL) {
+#else
+    if (ptyFd < 0) {
+#endif
+        startShell();
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    checkFontSizeChange();
+    bool windowCreated = setupWindow();
+    // Only render terminal content if window is open and not collapsed
+    if (windowCreated && (!isEmbedded || !embeddedWindowCollapsed)) {
+        // Pre-compute sizes and decide if scrollbar is needed (before columns)
+        ImVec2 fullAvail = ImGui::GetContentRegionAvail();
+        float charWidth = ImGui::GetFont()->GetCharAdvance('M');
+        float lineHeight = ImGui::GetTextLineHeight();
+        bool needScrollbar = !(state.mode & MODE_ALTSCREEN) && !scrollbackBuffer.empty();
+        float termWidth = needScrollbar ? fullAvail.x - SCROLLBAR_WIDTH : fullAvail.x;
+        int newCols = MAX(1, static_cast<int>(termWidth / charWidth));
+        int newRows = MAX(1, static_cast<int>(fullAvail.y / lineHeight));
+        if (newCols != state.col || newRows != state.row) {
+            std::cout << "resizing terminal" << std::endl;
+            resize(newCols, newRows);
+        }
+
+        // Optional: Add a checkbox to toggle inversion (e.g., at top of terminal area)
+      //  ImGui::Checkbox("Invert Scrollbar", &invertScroll);
+
+        // Now layout: Split columns only if scrollbar needed
+        if (needScrollbar) {
+            ImGui::Columns(2, nullptr, false);
+            ImGui::SetColumnWidth(0, termWidth);
+        }
+
+        // Terminal content area (in left column if split, or full otherwise)
+        ImGui::BeginGroup();
+        renderBuffer();
+        handleMouseInput(io, termWidth);  // Pass termWidth for bounds check
+        handleKeyboardInput(io);
+        ImGui::EndGroup();
+
+        // Scrollbar (right column) if needed
+        if (needScrollbar) {
+            ImGui::NextColumn();
+            int maxScroll = MAX(0, static_cast<int>(scrollbackBuffer.size() + state.row) - newRows);
+            int sliderValue = scrollOffset;
+            if (invertScroll) {
+                sliderValue = maxScroll - scrollOffset;  // Invert: thumb at top = max offset (history)
+            }
+            ImGui::VSliderInt("##termscroll", ImVec2(SCROLLBAR_WIDTH, fullAvail.y), &sliderValue, 0, maxScroll, "");
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+                // Wheel over scrollbar: Direction based on inversion
+                int wheelDelta = static_cast<int>(io.MouseWheel * 3);
+                if (invertScroll) {
+                    wheelDelta = -wheelDelta;  // Flip wheel for inverted mode
+                }
+                scrollOffset += wheelDelta;
+                scrollOffset = LIMIT(scrollOffset, 0, maxScroll);
+            }
+            if (invertScroll) {
+                scrollOffset = maxScroll - sliderValue;  // Sync back with inversion
+            }
+            else {
+                scrollOffset = sliderValue;  // No inversion
+            }
+            ImGui::Columns(1);  // Reset
+        }
+
+        handleScrollback(io, newRows);  // Mouse wheel over terminal area
+    }
+    // Only call End() if Begin() was actually called and succeeded
+    if (windowCreated && isEmbedded) {
+        ImGui::End();
+    }
+}
+
+#endif
+
+
 
 void Terminal::renderBuffer() {
     std::lock_guard<std::mutex> lock(bufferMutex);
@@ -483,17 +566,22 @@ void Terminal::handleTerminalResize() {
     }
 }
 
-void Terminal::handleScrollback(const ImGuiIO & io, int new_rows) {
+void Terminal::handleScrollback(const ImGuiIO& io, int new_rows) {
     if (ImGui::IsWindowFocused() && ImGui::IsWindowHovered() && !(state.mode & MODE_ALTSCREEN)) {
         if (io.MouseWheel != 0.0f) {
             int maxScroll = MAX(0, (int)(scrollbackBuffer.size() + state.row) - new_rows);
-            // Reverse the scroll direction by changing subtraction to addition
-            scrollOffset += static_cast<int>(io.MouseWheel * 3);
+            int wheelDelta = static_cast<int>(io.MouseWheel * 3);
+            if (invertScroll) {
+                wheelDelta = -wheelDelta;  // Flip wheel direction for inverted mode
+            }
+            scrollOffset += wheelDelta;
             scrollOffset = LIMIT(scrollOffset, 0, maxScroll);
         }
     }
 }
 
+
+#if 0
 void Terminal::handleMouseInput(const ImGuiIO & io) {
     if (!ImGui::IsWindowFocused() || !ImGui::IsWindowHovered()) return;
     ImVec2 mousePos = ImGui::GetMousePos();
@@ -552,6 +640,71 @@ void Terminal::handleMouseInput(const ImGuiIO & io) {
         }
     }
 }
+#else
+void Terminal::handleMouseInput(const ImGuiIO& io, float termWidth) 
+{
+    if (!ImGui::IsWindowFocused() || !ImGui::IsWindowHovered()) return;
+    ImVec2 mousePos = ImGui::GetMousePos();
+    ImVec2 windowPos = ImGui::GetWindowPos();
+    // Ignore if mouse is outside terminal area (e.g., over scrollbar)
+    if (mousePos.x >= windowPos.x + termWidth) return;
+
+    ImVec2 contentPos = ImGui::GetCursorScreenPos();
+    float charWidth = ImGui::GetFont()->GetCharAdvance('M');
+    float lineHeight = ImGui::GetTextLineHeight();
+    int cellX = static_cast<int>((mousePos.x - contentPos.x) / charWidth);
+    int cellY = static_cast<int>((mousePos.y - contentPos.y + (lineHeight * 0.2)) / lineHeight);
+    cellX = LIMIT(cellX, 0, state.col - 1);
+    // Account for scrollback offset when not in alt screen
+    if (!(state.mode & MODE_ALTSCREEN)) {
+        ImVec2 contentSize = ImGui::GetContentRegionAvail();
+        int visibleRows = MAX(1, static_cast<int>(contentSize.y / lineHeight));
+        int totalLines = scrollbackBuffer.size() + state.row;
+        int maxScroll = MAX(0, totalLines - visibleRows);
+        scrollOffset = LIMIT(scrollOffset, 0, maxScroll);
+        int startLine = MAX(0, totalLines - visibleRows - scrollOffset);
+        // Convert visible Y coordinate to actual buffer coordinate
+        int actualY = startLine + cellY;
+        // Convert to selection coordinate system (relative to scrollback buffer)
+        cellY = actualY - static_cast<int>(scrollbackBuffer.size());
+    }
+    else {
+        // In alt screen, clamp to current screen
+        cellY = LIMIT(cellY, 0, state.row - 1);
+    }
+    static ImVec2 clickStartPos{ 0, 0 };
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        clickStartPos = mousePos;
+        selectionStart(cellX, cellY);
+    }
+    else if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        ImVec2 dragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+        float dragDistance = sqrt(dragDelta.x * dragDelta.x + dragDelta.y * dragDelta.y);
+        if (dragDistance > DRAG_THRESHOLD) {
+            selectionExtend(cellX, cellY);
+        }
+    }
+    else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        ImVec2 dragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+        float dragDistance = sqrt(dragDelta.x * dragDelta.x + dragDelta.y * dragDelta.y);
+        if (dragDistance <= DRAG_THRESHOLD) {
+            selectionClear();
+        }
+    }
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        pasteFromClipboard();
+    }
+    // Handle clipboard shortcuts
+    if (io.KeyCtrl) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Y, false) || ImGui::IsKeyPressed(ImGuiKey_C, false)) {
+            copySelection();
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_V, false)) {
+            pasteFromClipboard();
+        }
+    }
+}
+#endif
 
 void Terminal::handleKeyboardInput(const ImGuiIO & io) {
     if (!ImGui::IsWindowFocused()) return;
@@ -978,7 +1131,8 @@ void Terminal::writeChar(Rune u) {
     state.c.x++;
 }
 
-int Terminal::eschandle(unsigned char ascii) {
+int Terminal::eschandle(unsigned char ascii) 
+{
     switch (ascii) {
     case '[':
         state.esc |= ESC_CSI;
@@ -1048,6 +1202,13 @@ int Terminal::eschandle(unsigned char ascii) {
         break;
     case '\\':
         break;
+    case 'P':  // DCS
+    case ']':  // OSC
+    case '^':  // PM
+    case '_':  // APC
+        strescseq.type = ascii;
+        state.esc |= ESC_STR;
+        return 0;
     default:
         fprintf(stderr, "esc unhandled: ESC %c\n", ascii);
         break;

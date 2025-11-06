@@ -293,7 +293,8 @@ private:
 	void checkFontSizeChange();
 	bool setupWindow();
 	void handleTerminalResize();
-	void handleMouseInput(const ImGuiIO& io);
+//	void handleMouseInput(const ImGuiIO& io);
+	void handleMouseInput(const ImGuiIO& io, float termWidth);
 	void handleScrollback(const ImGuiIO& io, int new_rows);
 	void handleKeyboardInput(const ImGuiIO& io);
 	void handleSpecialKeys(const ImGuiIO& io);
